@@ -26,7 +26,6 @@
 #include "wlr-input-inhibitor-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "wlr-screencopy-unstable-v1-client-protocol.h"
-#include "xdg-output-unstable-v1-client-protocol.h"
 #include "ext-session-lock-v1-client-protocol.h"
 
 // returns a positive integer in milliseconds
@@ -278,8 +277,6 @@ static bool surface_is_opaque(struct swaylock_surface *surface) {
 	return (surface->state->args.colors.background & 0xff) == 0xff;
 }
 
-struct zxdg_output_v1_listener _xdg_output_listener;
-
 static void create_surface(struct swaylock_surface *surface) {
 	struct swaylock_state *state = surface->state;
 
@@ -288,19 +285,6 @@ static void create_surface(struct swaylock_surface *surface) {
 	}
 
 	surface->image = select_image(state, surface);
-
-	static bool has_printed_zxdg_error = false;
-	if (state->zxdg_output_manager) {
-		surface->xdg_output = zxdg_output_manager_v1_get_xdg_output(
-				state->zxdg_output_manager, surface->output);
-		zxdg_output_v1_add_listener(
-				surface->xdg_output, &_xdg_output_listener, surface);
-		surface->events_pending += 1;
-	} else if (!has_printed_zxdg_error) {
-		swaylock_log(LOG_INFO, "Compositor does not support zxdg output "
-				"manager, images assigned to named outputs will not work");
-		has_printed_zxdg_error = true;
-	}
 
 	surface->surface = wl_compositor_create_surface(state->compositor);
 	assert(surface->surface);
@@ -474,10 +458,6 @@ static void handle_wl_output_mode(void *data, struct wl_output *output,
 	// Who cares
 }
 
-static void handle_wl_output_done(void *data, struct wl_output *output) {
-	// Who cares
-}
-
 static void handle_wl_output_scale(void *data, struct wl_output *output,
 		int32_t factor) {
 	swaylock_trace();
@@ -487,13 +467,6 @@ static void handle_wl_output_scale(void *data, struct wl_output *output,
 		damage_surface(surface);
 	}
 }
-
-struct wl_output_listener _wl_output_listener = {
-	.geometry = handle_wl_output_geometry,
-	.mode = handle_wl_output_mode,
-	.done = handle_wl_output_done,
-	.scale = handle_wl_output_scale,
-};
 
 static struct wl_buffer *create_shm_buffer(struct wl_shm *shm, enum wl_shm_format fmt,
 		int width, int height, int stride, void **data_out) {
@@ -672,31 +645,19 @@ static const struct zwlr_screencopy_frame_v1_listener screencopy_frame_listener 
 	.failed = handle_screencopy_frame_failed,
 };
 
-static void handle_xdg_output_logical_size(void *data, struct zxdg_output_v1 *output,
-		int width, int height) {
-	// Who cares
-}
-
-static void handle_xdg_output_logical_position(void *data,
-		struct zxdg_output_v1 *output, int x, int y) {
-	// Who cares
-}
-
-static void handle_xdg_output_name(void *data, struct zxdg_output_v1 *output,
+static void handle_wl_output_name(void *data, struct wl_output *output,
 		const char *name) {
 	swaylock_trace();
-	swaylock_log(LOG_DEBUG, "output name is %s", name);
 	struct swaylock_surface *surface = data;
-	surface->xdg_output = output;
 	surface->output_name = strdup(name);
 }
 
-static void handle_xdg_output_description(void *data, struct zxdg_output_v1 *output,
+static void handle_wl_output_description(void *data, struct wl_output *output,
 		const char *description) {
 	// Who cares
 }
 
-static void handle_xdg_output_done(void *data, struct zxdg_output_v1 *output) {
+static void handle_wl_output_done(void *data, struct wl_output *output) {
 	swaylock_trace();
 	struct swaylock_surface *surface = data;
 	struct swaylock_state *state = surface->state;
@@ -729,12 +690,13 @@ static void handle_xdg_output_done(void *data, struct zxdg_output_v1 *output) {
 	}
 }
 
-struct zxdg_output_v1_listener _xdg_output_listener = {
-	.logical_position = handle_xdg_output_logical_position,
-	.logical_size = handle_xdg_output_logical_size,
-	.done = handle_xdg_output_done,
-	.name = handle_xdg_output_name,
-	.description = handle_xdg_output_description,
+struct wl_output_listener _wl_output_listener = {
+	.geometry = handle_wl_output_geometry,
+	.mode = handle_wl_output_mode,
+	.done = handle_wl_output_done,
+	.scale = handle_wl_output_scale,
+	.name = handle_wl_output_name,
+	.description = handle_wl_output_description,
 };
 
 static void ext_session_lock_v1_handle_locked(void *data, struct ext_session_lock_v1 *lock) {
@@ -778,15 +740,12 @@ static void handle_global(void *data, struct wl_registry *registry,
 	} else if (strcmp(interface, zwlr_input_inhibit_manager_v1_interface.name) == 0) {
 		state->input_inhibit_manager = wl_registry_bind(
 				registry, name, &zwlr_input_inhibit_manager_v1_interface, 1);
-	} else if (strcmp(interface, zxdg_output_manager_v1_interface.name) == 0) {
-		state->zxdg_output_manager = wl_registry_bind(
-				registry, name, &zxdg_output_manager_v1_interface, 2);
 	} else if (strcmp(interface, wl_output_interface.name) == 0) {
 		struct swaylock_surface *surface =
 			calloc(1, sizeof(struct swaylock_surface));
 		surface->state = state;
 		surface->output = wl_registry_bind(registry, name,
-				&wl_output_interface, 3);
+				&wl_output_interface, 4);
 		surface->output_global_name = name;
 		wl_output_add_listener(surface->output, &_wl_output_listener, surface);
 		wl_list_insert(&state->surfaces, &surface->link);
