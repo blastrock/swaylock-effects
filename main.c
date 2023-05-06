@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,13 +21,13 @@
 #include "comm.h"
 #include "log.h"
 #include "loop.h"
+#include "password-buffer.h"
 #include "pool-buffer.h"
 #include "seat.h"
 #include "swaylock.h"
 #include "wlr-input-inhibitor-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "wlr-screencopy-unstable-v1-client-protocol.h"
-#include "xdg-output-unstable-v1-client-protocol.h"
 #include "ext-session-lock-v1-client-protocol.h"
 
 // returns a positive integer in milliseconds
@@ -104,7 +105,7 @@ static const char *parse_screen_pos_pair(const char *str, char delim,
 }
 
 static const char *parse_constant(const char *str1, const char *str2) {
-	size_t len = strlen(str2); 
+	size_t len = strlen(str2);
 	if (strncmp(str1, str2, len) == 0) {
 		return str1 + len;
 	} else {
@@ -277,9 +278,8 @@ static bool surface_is_opaque(struct swaylock_surface *surface) {
 	return (surface->state->args.colors.background & 0xff) == 0xff;
 }
 
-struct zxdg_output_v1_listener _xdg_output_listener;
-
 static void create_surface(struct swaylock_surface *surface) {
+	swaylock_trace();
 	struct swaylock_state *state = surface->state;
 
 	if (state->args.allow_fade && state->args.fade_in) {
@@ -351,8 +351,6 @@ static void layer_surface_configure(void *data,
 	struct swaylock_surface *surface = data;
 	surface->width = width;
 	surface->height = height;
-	surface->indicator_width = 0;
-	surface->indicator_height = 0;
 	zwlr_layer_surface_v1_ack_configure(layer_surface, serial);
 
 	if (!surface->configured && --surface->events_pending == 0) {
@@ -376,11 +374,10 @@ static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
 static void ext_session_lock_surface_v1_handle_configure(void *data,
 		struct ext_session_lock_surface_v1 *lock_surface, uint32_t serial,
 		uint32_t width, uint32_t height) {
+	swaylock_trace();
 	struct swaylock_surface *surface = data;
 	surface->width = width;
 	surface->height = height;
-	surface->indicator_width = 0;
-	surface->indicator_height = 0;
 	// Render before we send the ACK event, so that we minimize flickering
 	// This means we cannot commit immediately after rendering -- we will have
 	// to send the ACK first and then commit.
@@ -465,10 +462,6 @@ static void handle_wl_output_mode(void *data, struct wl_output *output,
 	// Who cares
 }
 
-static void handle_wl_output_done(void *data, struct wl_output *output) {
-	// Who cares
-}
-
 static void handle_wl_output_scale(void *data, struct wl_output *output,
 		int32_t factor) {
 	swaylock_trace();
@@ -478,13 +471,6 @@ static void handle_wl_output_scale(void *data, struct wl_output *output,
 		damage_surface(surface);
 	}
 }
-
-struct wl_output_listener _wl_output_listener = {
-	.geometry = handle_wl_output_geometry,
-	.mode = handle_wl_output_mode,
-	.done = handle_wl_output_done,
-	.scale = handle_wl_output_scale,
-};
 
 static struct wl_buffer *create_shm_buffer(struct wl_shm *shm, enum wl_shm_format fmt,
 		int width, int height, int stride, void **data_out) {
@@ -664,31 +650,7 @@ static const struct zwlr_screencopy_frame_v1_listener screencopy_frame_listener 
 	.failed = handle_screencopy_frame_failed,
 };
 
-static void handle_xdg_output_logical_size(void *data, struct zxdg_output_v1 *output,
-		int width, int height) {
-	// Who cares
-}
-
-static void handle_xdg_output_logical_position(void *data,
-		struct zxdg_output_v1 *output, int x, int y) {
-	// Who cares
-}
-
-static void handle_xdg_output_name(void *data, struct zxdg_output_v1 *output,
-		const char *name) {
-	swaylock_trace();
-	swaylock_log(LOG_DEBUG, "output name is %s", name);
-	struct swaylock_surface *surface = data;
-	surface->xdg_output = output;
-	surface->output_name = strdup(name);
-}
-
-static void handle_xdg_output_description(void *data, struct zxdg_output_v1 *output,
-		const char *description) {
-	// Who cares
-}
-
-static void handle_xdg_output_done(void *data, struct zxdg_output_v1 *output) {
+static void handle_wl_output_done(void *data, struct wl_output *output) {
 	swaylock_trace();
 	struct swaylock_surface *surface = data;
 	struct swaylock_state *state = surface->state;
@@ -700,6 +662,7 @@ static void handle_xdg_output_done(void *data, struct zxdg_output_v1 *output) {
 		zwlr_screencopy_frame_v1_add_listener(surface->screencopy_frame,
 				&screencopy_frame_listener, surface);
 		surface->events_pending += 1;
+		swaylock_log(LOG_DEBUG, "incremented events_pending screen copy");
 	} else if (!has_printed_screencopy_error) {
 		swaylock_log(LOG_INFO, "Compositor does not support screencopy manager, "
 				"screenshots / fade-in will not work");
@@ -711,16 +674,31 @@ static void handle_xdg_output_done(void *data, struct zxdg_output_v1 *output) {
 	--surface->events_pending;
 }
 
-struct zxdg_output_v1_listener _xdg_output_listener = {
-	.logical_position = handle_xdg_output_logical_position,
-	.logical_size = handle_xdg_output_logical_size,
-	.done = handle_xdg_output_done,
-	.name = handle_xdg_output_name,
-	.description = handle_xdg_output_description,
+static void handle_wl_output_name(void *data, struct wl_output *output,
+		const char *name) {
+	swaylock_trace();
+	swaylock_log(LOG_DEBUG, "output name is %s", name);
+	struct swaylock_surface *surface = data;
+	surface->output_name = strdup(name);
+}
+
+static void handle_wl_output_description(void *data, struct wl_output *output,
+		const char *description) {
+	// Who cares
+}
+
+struct wl_output_listener _wl_output_listener = {
+	.geometry = handle_wl_output_geometry,
+	.mode = handle_wl_output_mode,
+	.done = handle_wl_output_done,
+	.scale = handle_wl_output_scale,
+	.name = handle_wl_output_name,
+	.description = handle_wl_output_description,
 };
 
 static void ext_session_lock_v1_handle_locked(void *data, struct ext_session_lock_v1 *lock) {
-	// Who cares
+	struct swaylock_state *state = data;
+	state->locked = true;
 }
 
 static void ext_session_lock_v1_handle_finished(void *data, struct ext_session_lock_v1 *lock) {
@@ -736,7 +714,6 @@ static const struct ext_session_lock_v1_listener ext_session_lock_v1_listener = 
 
 static void handle_global(void *data, struct wl_registry *registry,
 		uint32_t name, const char *interface, uint32_t version) {
-
 	struct swaylock_state *state = data;
 	if (strcmp(interface, wl_compositor_interface.name) == 0) {
 		state->compositor = wl_registry_bind(registry, name,
@@ -760,15 +737,12 @@ static void handle_global(void *data, struct wl_registry *registry,
 	} else if (strcmp(interface, zwlr_input_inhibit_manager_v1_interface.name) == 0) {
 		state->input_inhibit_manager = wl_registry_bind(
 				registry, name, &zwlr_input_inhibit_manager_v1_interface, 1);
-	} else if (strcmp(interface, zxdg_output_manager_v1_interface.name) == 0) {
-		state->zxdg_output_manager = wl_registry_bind(
-				registry, name, &zxdg_output_manager_v1_interface, 2);
 	} else if (strcmp(interface, wl_output_interface.name) == 0) {
 		struct swaylock_surface *surface =
 			calloc(1, sizeof(struct swaylock_surface));
 		surface->state = state;
 		surface->output = wl_registry_bind(registry, name,
-				&wl_output_interface, 3);
+				&wl_output_interface, 4);
 		surface->output_global_name = name;
 		wl_output_add_listener(surface->output, &_wl_output_listener, surface);
 		wl_list_insert(&state->surfaces, &surface->link);
@@ -802,6 +776,12 @@ static const struct wl_registry_listener registry_listener = {
 	.global = handle_global,
 	.global_remove = handle_global_remove,
 };
+
+static int sigusr_fds[2] = {-1, -1};
+
+void do_sigusr(int sig) {
+	(void)write(sigusr_fds[1], "1", 1);
+}
 
 static cairo_surface_t *select_image(struct swaylock_state *state,
 		struct swaylock_surface *surface) {
@@ -1754,6 +1734,36 @@ static void comm_in(int fd, short mask, void *data) {
 	}
 }
 
+static void term_in(int fd, short mask, void *data) {
+	state.run_display = false;
+}
+
+// Check for --debug 'early' we also apply the correct loglevel
+// to the forked child, without having to first proces all of the
+// configuration (including from file) before forking and (in the
+// case of the shadow backend) dropping privileges
+void log_init(int argc, char **argv) {
+	static struct option long_options[] = {
+		{"debug", no_argument, NULL, 'd'},
+        {0, 0, 0, 0}
+    };
+    int c;
+	optind = 1;
+    while (1) {
+		int opt_idx = 0;
+		c = getopt_long(argc, argv, "-:d", long_options, &opt_idx);
+		if (c == -1) {
+			break;
+		}
+		switch (c) {
+		case 'd':
+			swaylock_log_init(LOG_DEBUG);
+			return;
+		}
+	}
+	swaylock_log_init(LOG_ERROR);
+}
+
 static void timer_render(void *data) {
 	struct swaylock_state *state = (struct swaylock_state *)data;
 	damage_state(state);
@@ -1761,7 +1771,7 @@ static void timer_render(void *data) {
 }
 
 int main(int argc, char **argv) {
-	swaylock_log_init(LOG_ERROR);
+	log_init(argc, argv);
 	initialize_pw_backend(argc, argv);
 	srand(time(NULL));
 
@@ -1839,13 +1849,17 @@ int main(int argc, char **argv) {
 		state.auth_state = AUTH_STATE_GRACE;
 	}
 
-#ifdef __linux__
-	// Most non-linux platforms require root to mlock()
-	if (mlock(state.password.buffer, sizeof(state.password.buffer)) != 0) {
-		swaylock_log(LOG_ERROR, "Unable to mlock() password memory.");
+	state.password.len = 0;
+	state.password.buffer_len = 1024;
+	state.password.buffer = password_buffer_create(state.password.buffer_len);
+	if (!state.password.buffer) {
 		return EXIT_FAILURE;
 	}
-#endif
+
+	if (pipe(sigusr_fds) != 0) {
+		swaylock_log(LOG_ERROR, "Failed to pipe");
+		return 1;
+	}
 
 	wl_list_init(&state.surfaces);
 	state.xkb.context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
@@ -1862,40 +1876,40 @@ int main(int argc, char **argv) {
 	wl_registry_add_listener(registry, &registry_listener, &state);
 	wl_display_roundtrip(state.display);
 
-	if (!state.compositor || !state.shm) {
-		swaylock_log(LOG_ERROR, "Missing wl_compositor or wl_shm");
+	if (!state.compositor) {
+		swaylock_log(LOG_ERROR, "Missing wl_compositor");
+		return 1;
+	}
+
+	if (!state.subcompositor) {
+		swaylock_log(LOG_ERROR, "Missing wl_subcompositor");
+		return 1;
+	}
+
+	if (!state.shm) {
+		swaylock_log(LOG_ERROR, "Missing wl_shm");
 		return 1;
 	}
 
 	struct swaylock_surface *surface;
-	if (state.zxdg_output_manager) {
-		// Enumerate all outputs first so that screenshots can be obtained
-		// before ext_session_lock_manager_v1_lock(). After the screen is locked,
-		// no screenshot can be retrieved because normal rendering is blocked.
-		wl_list_for_each(surface, &state.surfaces, link) {
-			surface->xdg_output = zxdg_output_manager_v1_get_xdg_output(
-					state.zxdg_output_manager, surface->output);
-			zxdg_output_v1_add_listener(
-					surface->xdg_output, &_xdg_output_listener, surface);
+	// Enumerate all outputs first so that screenshots can be obtained
+	// before ext_session_lock_manager_v1_lock(). After the screen is locked,
+	// no screenshot can be retrieved because normal rendering is blocked.
+	wl_list_for_each(surface, &state.surfaces, link) {
+		if (!surface->configured) {
 			surface->events_pending += 1;
-		};
-
-		wl_list_for_each(surface, &state.surfaces, link) {
-			while (surface->events_pending > 0) {
-				wl_display_roundtrip(state.display);
-			}
 		}
-	} else {
-		swaylock_log(LOG_INFO, "Compositor does not support zxdg output "
-				"manager, images assigned to named outputs will not work");
-		state.args.screenshots = false;
-		state.args.fade_in = 0; // Fade in is not possible without screenshot
+	};
+
+	wl_list_for_each(surface, &state.surfaces, link) {
+		while (surface->events_pending > 0) {
+			wl_display_roundtrip(state.display);
+		}
 	}
 
 	// Must daemonize before we run any effects, since effects use openmp
 	int daemonfd;
 	if (state.args.daemonize) {
-		wl_display_roundtrip(state.display);
 		daemonfd = daemonize_start();
 	}
 
@@ -1931,14 +1945,32 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
+	state.test_surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 1, 1);
+	state.test_cairo = cairo_create(state.test_surface);
+
 	wl_list_for_each(surface, &state.surfaces, link) {
 		create_surface(surface);
 	}
 
-	wl_list_for_each(surface, &state.surfaces, link) {
-		while (surface->events_pending > 0) {
-			wl_display_roundtrip(state.display);
+        wl_list_for_each(surface, &state.surfaces, link) {
+                while (surface->events_pending > 0) {
+                        wl_display_roundtrip(state.display);
+                }
+        }
+
+        if (state.ext_session_lock_manager_v1) {
+		while (!state.locked) {
+			if (wl_display_dispatch(state.display) < 0) {
+				swaylock_log(LOG_ERROR, "wl_display_dispatch() failed");
+				return 2;
+			}
 		}
+	} else {
+		if (wl_display_roundtrip(state.display) < 0) {
+			swaylock_log(LOG_ERROR, "wl_display_roundtrip() failed");
+			return 2;
+		}
+		state.locked = true;
 	}
 
 	state.eventloop = loop_create();
@@ -1946,6 +1978,9 @@ int main(int argc, char **argv) {
 			display_in, NULL);
 
 	loop_add_fd(state.eventloop, get_comm_reply_fd(), POLLIN, comm_in, NULL);
+
+	loop_add_fd(state.eventloop, sigusr_fds[0], POLLIN, term_in, NULL);
+	signal(SIGUSR1, do_sigusr);
 
 	loop_add_timer(state.eventloop, 1000, timer_render, &state);
 
@@ -1980,9 +2015,11 @@ int main(int argc, char **argv) {
 	}
 	if (state.ext_session_lock_v1) {
 		ext_session_lock_v1_unlock_and_destroy(state.ext_session_lock_v1);
-		wl_display_flush(state.display);
+		wl_display_roundtrip(state.display);
 	}
 
 	free(state.args.font);
+	cairo_destroy(state.test_cairo);
+	cairo_surface_destroy(state.test_surface);
 	return 0;
 }

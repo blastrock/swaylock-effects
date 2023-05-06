@@ -72,13 +72,13 @@ void render_frame_background(struct swaylock_surface *surface, bool commit) {
 		return; // not yet configured
 	}
 
-	surface->current_buffer = get_next_buffer(state->shm,
+	struct pool_buffer *buffer = get_next_buffer(state->shm,
 			surface->buffers, buffer_width, buffer_height);
-	if (surface->current_buffer == NULL) {
+	if (buffer == NULL) {
 		return;
 	}
 
-	cairo_t *cairo = surface->current_buffer->cairo;
+	cairo_t *cairo = buffer->cairo;
 	cairo_set_antialias(cairo, CAIRO_ANTIALIAS_BEST);
 
 	cairo_save(cairo);
@@ -101,11 +101,33 @@ void render_frame_background(struct swaylock_surface *surface, bool commit) {
 	cairo_identity_matrix(cairo);
 
 	wl_surface_set_buffer_scale(surface->surface, surface->scale);
-	wl_surface_attach(surface->surface, surface->current_buffer->buffer, 0, 0);
+	wl_surface_attach(surface->surface, buffer->buffer, 0, 0);
 	wl_surface_damage_buffer(surface->surface, 0, 0, INT32_MAX, INT32_MAX);
 	if (commit) {
 		wl_surface_commit(surface->surface);
 	}
+}
+
+static uint32_t get_font_size(struct swaylock_state *state, int arc_radius) {
+	if (state->args.font_size > 0) {
+		return state->args.font_size;
+	} else {
+		return arc_radius / 3.0f;
+	}
+}
+
+static void configure_font_drawing(cairo_t *cairo, struct swaylock_state *state,
+		enum wl_output_subpixel subpixel, int arc_radius) {
+	cairo_font_options_t *fo = cairo_font_options_create();
+	cairo_font_options_set_hint_style(fo, CAIRO_HINT_STYLE_FULL);
+	cairo_font_options_set_antialias(fo, CAIRO_ANTIALIAS_SUBPIXEL);
+	cairo_font_options_set_subpixel_order(fo, to_cairo_subpixel_order(subpixel));
+
+	cairo_set_font_options(cairo, fo);
+	cairo_select_font_face(cairo, state->args.font,
+		CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+	cairo_set_font_size(cairo, get_font_size(state, arc_radius));
+	cairo_font_options_destroy(fo);
 }
 
 void render_background_fade(struct swaylock_surface *surface, uint32_t time) {
@@ -122,118 +144,25 @@ void render_background_fade(struct swaylock_surface *surface, uint32_t time) {
 void render_frame(struct swaylock_surface *surface) {
 	struct swaylock_state *state = surface->state;
 
-	int arc_radius = state->args.radius * surface->scale;
-	int arc_thickness = state->args.thickness * surface->scale;
-	int buffer_diameter = (arc_radius + arc_thickness) * 2;
+	// First, compute the text that will be drawn, if any, since this
+	// determines the size/positioning of the surface
 
-	int buffer_width = surface->indicator_width;
-	int buffer_height = surface->indicator_height;
-	int new_width = buffer_diameter;
-	int new_height = buffer_diameter;
+	char attempts[4]; // like i3lock: count no more than 999
+	char *text = NULL;
+	char *text_l1 = NULL;
+	char *text_l2 = NULL;
+	const char *layout_text = NULL;
 
-	int subsurf_xpos;
-	int subsurf_ypos;
-
-	// Center the indicator unless overridden by the user
-	if (state->args.override_indicator_x_position) {
-		subsurf_xpos = state->args.indicator_x_position -
-			buffer_width / (2 * surface->scale) + 2 / surface->scale;
-	} else {
-		subsurf_xpos = surface->width / 2 -
-			buffer_width / (2 * surface->scale) + 2 / surface->scale;
-	}
-
-	if (state->args.override_indicator_y_position) {
-		subsurf_ypos = state->args.indicator_y_position -
-			(state->args.radius + state->args.thickness);
-	} else {
-		subsurf_ypos = surface->height / 2 -
-			(state->args.radius + state->args.thickness);
-	}
-
-	wl_subsurface_set_position(surface->subsurface, subsurf_xpos, subsurf_ypos);
-
-	surface->current_buffer = get_next_buffer(state->shm,
-			surface->indicator_buffers, buffer_width, buffer_height);
-	if (surface->current_buffer == NULL) {
-		return;
-	}
-
-	// Hide subsurface until we want it visible
-	wl_surface_attach(surface->child, NULL, 0, 0);
-	wl_surface_commit(surface->child);
-
-	cairo_t *cairo = surface->current_buffer->cairo;
-	cairo_set_antialias(cairo, CAIRO_ANTIALIAS_BEST);
-	cairo_font_options_t *fo = cairo_font_options_create();
-	cairo_font_options_set_hint_style(fo, CAIRO_HINT_STYLE_FULL);
-	cairo_font_options_set_antialias(fo, CAIRO_ANTIALIAS_SUBPIXEL);
-	cairo_font_options_set_subpixel_order(fo, to_cairo_subpixel_order(surface->subpixel));
-	cairo_set_font_options(cairo, fo);
-	cairo_font_options_destroy(fo);
-	cairo_identity_matrix(cairo);
-
-	// Clear
-	cairo_save(cairo);
-	cairo_set_source_rgba(cairo, 0, 0, 0, 0);
-	cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
-	cairo_paint(cairo);
-	cairo_restore(cairo);
-
-	float type_indicator_border_thickness =
-		TYPE_INDICATOR_BORDER_THICKNESS * surface->scale;
-
-	// This is a bit messy.
-	// After the fork, upstream added their own --indicator-idle-visible option,
-	// but it works slightly differently from swaylock-effects' --indicator
-	// option. To maintain compatibility with upstream swaylock scripts as well
-	// as with old swaylock-effects scripts, I will keep both flags.
-	bool upstream_show_indicator =
-		state->args.show_indicator && (state->auth_state != AUTH_STATE_IDLE ||
-			state->args.indicator_idle_visible);
-
-	if (state->args.indicator ||
-			(upstream_show_indicator && state->auth_state != AUTH_STATE_GRACE)) {
-		// Fill inner circle
-		cairo_set_line_width(cairo, 0);
-		cairo_arc(cairo, buffer_width / 2, buffer_diameter / 2,
-				arc_radius - arc_thickness / 2, 0, 2 * M_PI);
-		set_color_for_state(cairo, state, &state->args.colors.inside);
-		cairo_fill_preserve(cairo);
-		cairo_stroke(cairo);
-
-		// Draw ring
-		cairo_set_line_width(cairo, arc_thickness);
-		cairo_arc(cairo, buffer_width / 2, buffer_diameter / 2, arc_radius,
-				0, 2 * M_PI);
-		set_color_for_state(cairo, state, &state->args.colors.ring);
-		cairo_stroke(cairo);
-
-		// Draw a message
-		char *text = NULL;
-		char *text_l1 = NULL;
-		char *text_l2 = NULL;
-		const char *layout_text = NULL;
-		double font_size;
-		char attempts[4]; // like i3lock: count no more than 999
-		set_color_for_state(cairo, state, &state->args.colors.text);
-		cairo_select_font_face(cairo, state->args.font,
-				CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-		if (state->args.font_size > 0) {
-			font_size = state->args.font_size;
-		} else {
-			font_size = arc_radius / 3.0f;
-		}
-		cairo_set_font_size(cairo, font_size);
+	if (state->args.show_indicator) {
 		switch (state->auth_state) {
 		case AUTH_STATE_VALIDATING:
-			text = "verifying";
+			text = "Verifying";
 			break;
 		case AUTH_STATE_INVALID:
-			text = "wrong";
+			text = "Wrong";
 			break;
 		case AUTH_STATE_CLEAR:
-			text = "cleared";
+			text = "Cleared";
 			break;
 		case AUTH_STATE_INPUT:
 		case AUTH_STATE_INPUT_NOP:
@@ -273,6 +202,113 @@ void render_frame(struct swaylock_surface *surface) {
 				timetext(surface, &text_l1, &text_l2);
 			break;
 		}
+	}
+
+	// Compute the size of the buffer needed
+	int arc_radius = state->args.radius * surface->scale;
+	int arc_thickness = state->args.thickness * surface->scale;
+	int buffer_diameter = (arc_radius + arc_thickness) * 2;
+	int buffer_width = buffer_diameter;
+	int buffer_height = buffer_diameter;
+
+	if (text || layout_text) {
+		cairo_set_antialias(state->test_cairo, CAIRO_ANTIALIAS_BEST);
+		configure_font_drawing(state->test_cairo, state, surface->subpixel, arc_radius);
+
+		if (text) {
+			cairo_text_extents_t extents;
+			cairo_text_extents(state->test_cairo, text, &extents);
+			if (buffer_width < extents.width) {
+				buffer_width = extents.width;
+			}
+		}
+		if (layout_text) {
+			cairo_text_extents_t extents;
+			cairo_font_extents_t fe;
+			double box_padding = 4.0 * surface->scale;
+			cairo_text_extents(state->test_cairo, layout_text, &extents);
+			cairo_font_extents(state->test_cairo, &fe);
+			buffer_height += fe.height + 2 * box_padding;
+			if (buffer_width < extents.width + 2 * box_padding) {
+				buffer_width = extents.width + 2 * box_padding;
+			}
+		}
+	}
+	// Ensure buffer size is multiple of buffer scale - required by protocol
+	buffer_height += surface->scale - (buffer_height % surface->scale);
+	buffer_width += surface->scale - (buffer_width % surface->scale);
+
+	int subsurf_xpos;
+	int subsurf_ypos;
+
+	// Center the indicator unless overridden by the user
+	if (state->args.override_indicator_x_position) {
+		subsurf_xpos = state->args.indicator_x_position -
+			buffer_width / (2 * surface->scale) + 2 / surface->scale;
+	} else {
+		subsurf_xpos = surface->width / 2 -
+			buffer_width / (2 * surface->scale) + 2 / surface->scale;
+	}
+
+	if (state->args.override_indicator_y_position) {
+		subsurf_ypos = state->args.indicator_y_position -
+			(state->args.radius + state->args.thickness);
+	} else {
+		subsurf_ypos = surface->height / 2 -
+			(state->args.radius + state->args.thickness);
+	}
+
+	struct pool_buffer *buffer = get_next_buffer(state->shm,
+			surface->indicator_buffers, buffer_width, buffer_height);
+	if (buffer == NULL) {
+		return;
+	}
+
+	// Render the buffer
+	cairo_t *cairo = buffer->cairo;
+	cairo_set_antialias(cairo, CAIRO_ANTIALIAS_BEST);
+
+	cairo_identity_matrix(cairo);
+
+	// Clear
+	cairo_save(cairo);
+	cairo_set_source_rgba(cairo, 0, 0, 0, 0);
+	cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
+	cairo_paint(cairo);
+	cairo_restore(cairo);
+
+	float type_indicator_border_thickness =
+		TYPE_INDICATOR_BORDER_THICKNESS * surface->scale;
+
+	// This is a bit messy.
+	// After the fork, upstream added their own --indicator-idle-visible option,
+	// but it works slightly differently from swaylock-effects' --indicator
+	// option. To maintain compatibility with upstream swaylock scripts as well
+	// as with old swaylock-effects scripts, I will keep both flags.
+	bool upstream_show_indicator =
+		state->args.show_indicator && (state->auth_state != AUTH_STATE_IDLE ||
+			state->args.indicator_idle_visible);
+
+	if (state->args.indicator ||
+			(upstream_show_indicator && state->auth_state != AUTH_STATE_GRACE)) {
+		// Fill inner circle
+		cairo_set_line_width(cairo, 0);
+		cairo_arc(cairo, buffer_width / 2, buffer_diameter / 2,
+				arc_radius - arc_thickness / 2, 0, 2 * M_PI);
+		set_color_for_state(cairo, state, &state->args.colors.inside);
+		cairo_fill_preserve(cairo);
+		cairo_stroke(cairo);
+
+		// Draw ring
+		cairo_set_line_width(cairo, arc_thickness);
+		cairo_arc(cairo, buffer_width / 2, buffer_diameter / 2, arc_radius,
+				0, 2 * M_PI);
+		set_color_for_state(cairo, state, &state->args.colors.ring);
+		cairo_stroke(cairo);
+
+		// Draw a message
+		configure_font_drawing(cairo, state, surface->subpixel, arc_radius);
+		set_color_for_state(cairo, state, &state->args.colors.text);
 
 		if (text_l1 && !text_l2)
 			text = text_l1;
@@ -294,10 +330,6 @@ void render_frame(struct swaylock_surface *surface) {
 			cairo_show_text(cairo, text);
 			cairo_close_path(cairo);
 			cairo_new_sub_path(cairo);
-
-			if (new_width < extents.width) {
-				new_width = extents.width;
-			}
 		} else if (text_l1 && text_l2) {
 			cairo_text_extents_t extents_l1, extents_l2;
 			cairo_font_extents_t fe_l1, fe_l2;
@@ -332,13 +364,7 @@ void render_frame(struct swaylock_surface *surface) {
 			cairo_close_path(cairo);
 			cairo_new_sub_path(cairo);
 
-			if (new_width < extents_l1.width)
-				new_width = extents_l1.width;
-			if (new_width < extents_l2.width)
-				new_width = extents_l2.width;
-
-
-			cairo_set_font_size(cairo, font_size);
+			cairo_set_font_size(cairo, get_font_size(state, arc_radius));
 		}
 
 		// Typing indicator: Highlight random part on keypress
@@ -423,37 +449,16 @@ void render_frame(struct swaylock_surface *surface) {
 			cairo_set_source_u32(cairo, state->args.colors.layout_text);
 			cairo_show_text(cairo, layout_text);
 			cairo_new_sub_path(cairo);
-
-			new_height += fe.height + 2 * box_padding;
-			if (new_width < extents.width + 2 * box_padding) {
-				new_width = extents.width + 2 * box_padding;
-			}
 		}
 	}
 
-	// Ensure buffer size is multiple of buffer scale - required by protocol
-	new_height += surface->scale - (new_height % surface->scale);
-	new_width += surface->scale - (new_width % surface->scale);
-
-	if (buffer_width != new_width || buffer_height != new_height) {
-		destroy_buffer(surface->current_buffer);
-		surface->indicator_width = new_width;
-		surface->indicator_height = new_height;
-		render_frame(surface);
-		return;
-	}
+	// Send Wayland requests
+	wl_subsurface_set_position(surface->subsurface, subsurf_xpos, subsurf_ypos);
 
 	wl_surface_set_buffer_scale(surface->child, surface->scale);
-	wl_surface_attach(surface->child, surface->current_buffer->buffer, 0, 0);
+	wl_surface_attach(surface->child, buffer->buffer, 0, 0);
 	wl_surface_damage_buffer(surface->child, 0, 0, INT32_MAX, INT32_MAX);
 	wl_surface_commit(surface->child);
 
 	wl_surface_commit(surface->surface);
-}
-
-void render_frames(struct swaylock_state *state) {
-	struct swaylock_surface *surface;
-	wl_list_for_each(surface, &state->surfaces, link) {
-		render_frame(surface);
-	}
 }

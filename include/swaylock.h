@@ -85,7 +85,8 @@ struct swaylock_args {
 
 struct swaylock_password {
 	size_t len;
-	char buffer[1024];
+	size_t buffer_len;
+	char *buffer;
 };
 
 struct swaylock_state {
@@ -104,13 +105,14 @@ struct swaylock_state {
 	struct swaylock_args args;
 	struct swaylock_password password;
 	struct swaylock_xkb xkb;
+	cairo_surface_t *test_surface;
+	cairo_t *test_cairo; // used to estimate font/text sizes
 	enum auth_state auth_state;
 	bool indicator_dirty;
 	int render_randnum;
 	int failed_attempts;
 	size_t n_screenshots_done;
-	bool run_display;
-	struct zxdg_output_manager_v1 *zxdg_output_manager;
+	bool run_display, locked;
 	struct ext_session_lock_manager_v1 *ext_session_lock_manager_v1;
 	struct ext_session_lock_v1 *ext_session_lock_v1;
 };
@@ -127,7 +129,6 @@ struct swaylock_surface {
 	struct swaylock_state *state;
 	struct wl_output *output;
 	uint32_t output_global_name;
-	struct zxdg_output_v1 *xdg_output;
 	struct wl_surface *surface;
 	struct wl_surface *child; // surface made into subsurface
 	struct wl_subsurface *subsurface;
@@ -136,13 +137,11 @@ struct swaylock_surface {
 	struct ext_session_lock_surface_v1 *ext_session_lock_surface_v1;
 	struct pool_buffer buffers[2];
 	struct pool_buffer indicator_buffers[2];
-	struct pool_buffer *current_buffer;
 	struct swaylock_fade fade;
 	int events_pending;
 	bool configured;
 	bool frame_pending, dirty;
 	uint32_t width, height;
-	uint32_t indicator_width, indicator_height;
 	int32_t scale;
 	enum wl_output_subpixel subpixel;
 	enum wl_output_transform transform;
@@ -165,7 +164,6 @@ void swaylock_handle_touch(struct swaylock_state *state);
 void render_frame_background(struct swaylock_surface *surface, bool commit);
 void render_background_fade(struct swaylock_surface *surface, uint32_t time);
 void render_frame(struct swaylock_surface *surface);
-void render_frames(struct swaylock_state *state);
 void damage_surface(struct swaylock_surface *surface);
 void damage_state(struct swaylock_state *state);
 void clear_password_buffer(struct swaylock_password *pw);

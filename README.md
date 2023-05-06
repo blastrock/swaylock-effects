@@ -1,13 +1,20 @@
 # swaylock-effects
 
-Swaylock-effects is a fork of [swaylock](https://github.com/swaywm/swaylock)
+swaylock-effects-second is a fork of [swaylock](https://github.com/swaywm/swaylock)
 which adds built-in screenshots and image manipulation effects like blurring.
 It's inspired by [i3lock-color](https://github.com/PandorasFox/i3lock-color),
 although the feature sets aren't perfectly overlapping.
 
-This repository ([jirutka/swaylock-effects](https://github.com/jirutka/swaylock-effects))
-is a fork of [mortie/swaylock-effects](https://github.com/mortie/swaylock-effects)
-which is no longer maintained.
+This project has a chain of (somewhat unmaintained forks), here's how they are
+based on each other, in order:
+
+- [swaywm/swaylock](https://github.com/swaywm/swaylock)
+- [mortie/swaylock-effects](https://github.com/mortie/swaylock-effects)
+- [jirutka/swaylock-effects](https://github.com/jirutka/swaylock-effects)
+- [blastrock/swaylock-effects-second](https://github.com/blastrock/swaylock-effects-second)
+
+I added the suffix "-second" so that we don't have 3 projects with the same
+name. If I stop maintaining this, please fork it and take another name.
 
 ![Screenshot](https://raw.githubusercontent.com/jirutka/swaylock-effects/master/screenshot.png)
 
@@ -63,24 +70,6 @@ The main new features compared to upstream swaylock are:
 	* `--effect-vignette <base>:<factor>`: Apply a vignette effect (range is 0-1).
 	* `--effect-compose <position>;<size>;<gravity>;<path>`: Overlay another image.
 	* `--effect-custom <path>`: Load a custom effect from a C file or shared object.
-
-New feature ideas are welcome as issues (though I may never get around to
-implement them), new feature implementations are welcome as pull requests :)
-
-## Versions
-
-swaylock-effects continuously incorporates changes from the original [swaylock](https://github.com/swaywm/swaylock).
-The following table shows the relation between the swaylock-effect and swaylock versions.
-
-| swaylock-effects | swaylock (original)                                                                                 |
-| ---------------- | --------------------------------------------------------------------------------------------------- |
-| 1.6-0            | [1.5](https://github.com/swaywm/swaylock/tree/1.5)                                                  |
-| 1.6-1            | 1.5-7-g[a99afe6a](https://github.com/swaywm/swaylock/tree/a99afe6a7075c962da72b140f02e18318052d833) |
-| 1.6-2            | 1.5-9-g[235b925d](https://github.com/swaywm/swaylock/tree/235b925df7e1bb82d98f1ac8c02e8f85d0a54ee9) |
-| 1.6-3            | 1.5-9-g[235b925d](https://github.com/swaywm/swaylock/tree/235b925df7e1bb82d98f1ac8c02e8f85d0a54ee9) |
-| 1.6.10           | [1.6](https://github.com/swaywm/swaylock/tree/1.6)                                                  |
-| 1.6.11           | [1.6](https://github.com/swaywm/swaylock/tree/1.6)                                                  |
-
 
 ## Installation
 
