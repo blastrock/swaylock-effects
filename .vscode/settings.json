@@ -1,0 +1,13 @@
+{
+    "files.associations": {
+        "background-image.h": "c",
+        "cairo.h": "c",
+        "gdk-pixbuf.h": "c",
+        "glib.h": "c",
+        "galloca.h": "c",
+        "gtypes.h": "c",
+        "stdlib.h": "c"
+    },
+    "C_Cpp.errorSquiggles": "enabled",
+    "C_Cpp.default.compileCommands": "builddir/compile_commands.json"
+}

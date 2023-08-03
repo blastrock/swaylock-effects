@@ -6,6 +6,7 @@
 #include "cairo.h"
 #include "background-image.h"
 #include "swaylock.h"
+#include "log.h"
 
 #define M_PI 3.14159265358979323846
 const float TYPE_INDICATOR_RANGE = M_PI / 3.0f;
@@ -13,12 +14,12 @@ const float TYPE_INDICATOR_BORDER_THICKNESS = M_PI / 128.0f;
 
 static void set_color_for_state(cairo_t *cairo, struct swaylock_state *state,
 		struct swaylock_colorset *colorset) {
-	if (state->auth_state == AUTH_STATE_VALIDATING) {
+	if (state->input_state == INPUT_STATE_CLEAR) {
+		cairo_set_source_u32(cairo, colorset->cleared);
+	} else if (state->auth_state == AUTH_STATE_VALIDATING) {
 		cairo_set_source_u32(cairo, colorset->verifying);
 	} else if (state->auth_state == AUTH_STATE_INVALID) {
 		cairo_set_source_u32(cairo, colorset->wrong);
-	} else if (state->auth_state == AUTH_STATE_CLEAR) {
-		cairo_set_source_u32(cairo, colorset->cleared);
 	} else {
 		if (state->xkb.caps_lock && state->args.show_caps_lock_indicator) {
 			cairo_set_source_u32(cairo, colorset->caps_lock);
@@ -72,38 +73,50 @@ void render_frame_background(struct swaylock_surface *surface, bool commit) {
 		return; // not yet configured
 	}
 
-	struct pool_buffer *buffer = get_next_buffer(state->shm,
-			surface->buffers, buffer_width, buffer_height);
-	if (buffer == NULL) {
-		return;
-	}
-
-	cairo_t *cairo = buffer->cairo;
-	cairo_set_antialias(cairo, CAIRO_ANTIALIAS_BEST);
-
-	cairo_save(cairo);
-	cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
-	cairo_set_source_u32(cairo, state->args.colors.background);
-	cairo_paint(cairo);
-	if (surface->image && state->args.mode != BACKGROUND_MODE_SOLID_COLOR) {
-		cairo_set_operator(cairo, CAIRO_OPERATOR_OVER);
-		if (fade_is_complete(&surface->fade)) {
-			render_background_image(cairo, surface->image,
-				state->args.mode, buffer_width, buffer_height, 1);
-		} else {
-			render_background_image(cairo, surface->screencopy.original_image,
-				state->args.mode, buffer_width, buffer_height, 1);
-			render_background_image(cairo, surface->image,
-				state->args.mode, buffer_width, buffer_height, surface->fade.alpha);
-		}
-	}
-	cairo_restore(cairo);
-	cairo_identity_matrix(cairo);
-
 	wl_surface_set_buffer_scale(surface->surface, surface->scale);
-	wl_surface_attach(surface->surface, buffer->buffer, 0, 0);
-	wl_surface_damage_buffer(surface->surface, 0, 0, INT32_MAX, INT32_MAX);
-	if (commit) {
+
+	if (buffer_width != surface->last_buffer_width ||
+			buffer_height != surface->last_buffer_height) {
+		struct pool_buffer buffer;
+		if (!create_buffer(state->shm, &buffer, buffer_width, buffer_height,
+				WL_SHM_FORMAT_ARGB8888)) {
+			swaylock_log(LOG_ERROR,
+				"Failed to create new buffer for frame background.");
+			return;
+		}
+
+		cairo_t *cairo = buffer.cairo;
+		cairo_set_antialias(cairo, CAIRO_ANTIALIAS_BEST);
+
+		cairo_save(cairo);
+		cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
+		cairo_set_source_u32(cairo, state->args.colors.background);
+		cairo_paint(cairo);
+		if (surface->image && state->args.mode != BACKGROUND_MODE_SOLID_COLOR) {
+			cairo_set_operator(cairo, CAIRO_OPERATOR_OVER);
+			if (fade_is_complete(&surface->fade)) {
+				render_background_image(cairo, surface->image,
+					state->args.mode, buffer_width, buffer_height, 1);
+			} else {
+				render_background_image(cairo, surface->screencopy.original_image,
+					state->args.mode, buffer_width, buffer_height, 1);
+				render_background_image(cairo, surface->image,
+					state->args.mode, buffer_width, buffer_height, surface->fade.alpha);
+			}
+		}
+		cairo_restore(cairo);
+		cairo_identity_matrix(cairo);
+
+		wl_surface_attach(surface->surface, buffer.buffer, 0, 0);
+		wl_surface_damage_buffer(surface->surface, 0, 0, INT32_MAX, INT32_MAX);
+		if (commit) {
+			wl_surface_commit(surface->surface);
+		}
+		destroy_buffer(&buffer);
+
+		surface->last_buffer_width = buffer_width;
+		surface->last_buffer_height = buffer_height;
+	} else {
 		wl_surface_commit(surface->surface);
 	}
 }
@@ -153,20 +166,20 @@ void render_frame(struct swaylock_surface *surface) {
 	char *text_l2 = NULL;
 	const char *layout_text = NULL;
 
-	if (state->args.show_indicator) {
-		switch (state->auth_state) {
-		case AUTH_STATE_VALIDATING:
-			text = "Verifying";
-			break;
-		case AUTH_STATE_INVALID:
-			text = "Wrong";
-			break;
-		case AUTH_STATE_CLEAR:
+	bool draw_indicator = state->args.show_indicator &&
+		(state->auth_state != AUTH_STATE_IDLE ||
+			state->input_state != INPUT_STATE_IDLE ||
+			state->args.indicator_idle_visible);
+
+	if (draw_indicator) {
+		if (state->input_state == INPUT_STATE_CLEAR) {
+			// This message has highest priority
 			text = "Cleared";
-			break;
-		case AUTH_STATE_INPUT:
-		case AUTH_STATE_INPUT_NOP:
-		case AUTH_STATE_BACKSPACE:
+		} else if (state->auth_state == AUTH_STATE_VALIDATING) {
+			text = "Verifying";
+		} else if (state->auth_state == AUTH_STATE_INVALID) {
+			text = "Wrong";
+		} else if (state->input_state == INPUT_STATE_BACKSPACE || state->input_state == INPUT_STATE_LETTER || state->input_state == INPUT_STATE_NEUTRAL) {
 			// Caps Lock has higher priority
 			if (state->xkb.caps_lock && state->args.show_caps_lock_text) {
 				text = "Caps Lock";
@@ -196,11 +209,9 @@ void render_frame(struct swaylock_surface *surface) {
 				// will handle invalid index if none are active
 				layout_text = xkb_keymap_layout_get_name(state->xkb.keymap, curr_layout);
 			}
-			break;
-		default:
+		} else {
 			if (state->args.clock)
 				timetext(surface, &text_l1, &text_l2);
-			break;
 		}
 	}
 
@@ -368,20 +379,13 @@ void render_frame(struct swaylock_surface *surface) {
 		}
 
 		// Typing indicator: Highlight random part on keypress
-		if (state->auth_state == AUTH_STATE_INPUT
-				|| state->auth_state == AUTH_STATE_BACKSPACE) {
-
-			static double highlight_start = 0;
-			if (state->indicator_dirty) {
-				highlight_start +=
-					(rand() % (int)(M_PI * 100)) / 100.0 + M_PI * 0.5;
-				state->indicator_dirty = false;
-			}
-
+		if (state->input_state == INPUT_STATE_LETTER ||
+				state->input_state == INPUT_STATE_BACKSPACE) {
+			double highlight_start = state->highlight_start * (M_PI / 1024.0);
 			cairo_arc(cairo, buffer_width / 2, buffer_diameter / 2,
 					arc_radius, highlight_start,
 					highlight_start + TYPE_INDICATOR_RANGE);
-			if (state->auth_state == AUTH_STATE_INPUT) {
+			if (state->input_state == INPUT_STATE_LETTER) {
 				if (state->xkb.caps_lock && state->args.show_caps_lock_indicator) {
 					cairo_set_source_u32(cairo, state->args.colors.caps_lock_key_highlight);
 				} else {
